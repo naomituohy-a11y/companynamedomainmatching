@@ -1,229 +1,163 @@
-import re
-import io
+import streamlit as st
 import pandas as pd
 from rapidfuzz import fuzz
-import streamlit as st
 
-# ------------------ constants ------------------
-SUFFIXES = {
-    "ltd","limited","co","company","corp","corporation","inc","incorporated",
-    "plc","public","llc","lp","llp","ulc","pc","pllc","sa","ag","nv","se","bv",
-    "oy","ab","aps","as","kft","zrt","rt","sarl","sas","spa","gmbh","ug","bvba",
-    "cvba","nvsa","pte","pty","bhd","sdn","kabushiki","kaisha","kk","godo","dk",
-    "dmcc","pjsc","psc","jsc","ltda","srl","s.r.l","group","holdings","limitedpartnership"
-}
-
-THRESHOLD = 70
-
-# ------------------ helpers ------------------
-def _normalize_tokens(text: str) -> str:
-    if not isinstance(text, str):
-        return ""
-    text = re.sub(r"[^a-zA-Z0-9\s]", " ", text.lower())
-    parts = [w for w in text.split() if w not in SUFFIXES]
-    return " ".join(parts).strip()
-
-def _clean_domain(domain: str) -> str:
-    if not isinstance(domain, str):
-        return ""
-    domain = domain.lower().strip()
-    domain = re.sub(r"^https?://", "", domain)
-    domain = re.sub(r"/.*$", "", domain)
-    domain = re.sub(r"^www\.", "", domain)
-    parts = domain.split(".")
-    return parts[-2] if len(parts) >= 2 else domain
-
-def _extract_domain_from_email(email: str) -> str:
-    if not isinstance(email, str) or "@" not in email:
-        return ""
-    domain = email.split("@")[-1].lower().strip()
-    domain = re.sub(r"^www\.", "", domain)
-    domain = re.sub(r"/.*$", "", domain)
-    return domain
-
-def compare_company_domain(company: str, domain: str):
-    """Return (status, score, reason)."""
-    if not isinstance(company, str) or not isinstance(domain, str) or not company or not domain:
-        return "Unsure – Please Check", 0, "missing input"
-
-    c = _normalize_tokens(company)
-    d_raw = domain.lower().strip()
-    d_email = _extract_domain_from_email(d_raw)
-    d_raw = d_email or d_raw
-    d = _clean_domain(d_raw)
-
-    # exact or direct containment
-    if d and (d in c.replace(" ", "") or c.replace(" ", "") in d):
-        return "Likely Match", 100, "direct containment"
-
-    # token containment
-    if any(word in c for word in d.split()) or any(word in d for word in c.split()):
-        score = fuzz.partial_ratio(c, d)
-        if score >= 70:
-            return "Likely Match", score, "token containment"
-
-    # brand suffix check
-    BRAND_TERMS = {"tx","bio","pharma","therapeutics","labs","health","med","rx","group","holdings"}
-    if any(t in c.split() for t in BRAND_TERMS) and any(t in d for t in BRAND_TERMS):
-        if fuzz.partial_ratio(c, d) >= 70:
-            return "Likely Match", 90, "brand suffix match"
-
-    # fuzzy
-    score_full = fuzz.token_sort_ratio(c, d)
-    score_partial = fuzz.partial_ratio(c, d)
-    score = max(score_full, score_partial)
-
-    if score >= 85:
-        return "Likely Match", score, "strong fuzzy"
-    elif score >= THRESHOLD:
-        return "Unsure – Please Check", score, "weak fuzzy"
-    else:
-        return "Likely NOT Match", score, "low similarity"
-
-
-# ------------------ UI ------------------
-st.set_page_config(page_title="Company ↔ Domain Matching", page_icon="🔍", layout="wide")
-
-# ---------- STYLING / THEME ----------
-st.markdown(
-    """
-    <style>
-      .stApp {background: #0b1220;}
-      .block-container {max-width: 1200px;}
-      h1, h2, h3, h4, h5, p, label, span, div {color: #e9eef7 !important;}
-      .note {font-size: 0.92rem; color: #b9c3d6;}
-      .good {background:#163d2a; padding:2px 6px; border-radius:6px}
-      .bad {background:#44212a; padding:2px 6px; border-radius:6px}
-      .maybe {background:#403514; padding:2px 6px; border-radius:6px}
-
-      /* --- DROPDOWN FIXES --- */
-      div[data-baseweb="select"] > div {
-        background-color: #1a2235 !important;
-        color: #e9eef7 !important;
-        border: 1px solid #2f3a56 !important;
-      }
-      div[data-baseweb="popover"] {
-        background-color: #1a2235 !important;
-        border: 1px solid #2f3a56 !important;
-      }
-      div[role="listbox"] {
-        background-color: #1a2235 !important;
-        color: #e9eef7 !important;
-        border: 1px solid #2f3a56 !important;
-      }
-      div[role="option"] {
-        background-color: #1a2235 !important;
-        color: #e9eef7 !important;
-      }
-      div[role="option"]:hover {
-        background-color: #2a3b5f !important;
-        color: white !important;
-      }
-      div[aria-selected="true"] {
-        background-color: #314d8b !important;
-        color: white !important;
-      }
-
-      /* Buttons */
-      button[kind="primary"] {
-        background: linear-gradient(90deg, #3557ff, #2cc9ff) !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 8px !important;
-        font-weight: 600 !important;
-      }
-
-      /* File uploader */
-      section[data-testid="stFileUploader"] {
-        background-color: #1a2235;
-        padding: 15px;
-        border-radius: 10px;
-        border: 1px dashed #3b4a6b;
-      }
-
-      .stDataFrame, .stDataFrame div { color: #d9e2f2 !important; }
-    </style>
-    """,
-    unsafe_allow_html=True,
+# ---------------- PAGE SETUP ----------------
+st.set_page_config(
+    page_title="🔍 Company ↔ Domain Matching (Standalone)",
+    layout="wide",
+    page_icon="🔍"
 )
 
-# ---------- TITLE ----------
-st.title("🔍 Company ↔ Domain Matching (Standalone)")
+# ---------------- CUSTOM CSS ----------------
+st.markdown("""
+<style>
+  .stApp {background: #0b1220;}
+  .block-container {max-width: 1200px;}
+  h1, h2, h3, h4, h5, p, label, span, div {color: #e9eef7 !important;}
 
-# ---------- FILE UPLOAD ----------
-uploaded = st.file_uploader("Upload a CSV or Excel file", type=["csv", "xlsx"])
-if not uploaded:
-    st.info("Upload a file to begin.")
-    st.stop()
+  /* Fix selectbox dropdown visibility */
+  div[data-baseweb="select"] > div {
+    background-color: #1a2235 !important;
+    color: #e9eef7 !important;
+    border: 1px solid #2f3a56 !important;
+  }
 
-# ---------- READ FILE ----------
-try:
-    if uploaded.name.lower().endswith(".csv"):
-        df = pd.read_csv(uploaded)
-    else:
-        df = pd.read_excel(uploaded)
-except Exception as e:
-    st.error(f"Could not read file: {e}")
-    st.stop()
+  /* Popover container (the actual dropdown list) */
+  div[data-baseweb="popover"] {
+    background-color: #1a2235 !important;
+    border: 1px solid #2f3a56 !important;
+    color: #e9eef7 !important;
+  }
 
-if df.empty:
-    st.warning("The file appears to be empty.")
-    st.stop()
+  /* Listbox background and text */
+  ul[role="listbox"], div[role="listbox"] {
+    background-color: #1a2235 !important;
+    color: #e9eef7 !important;
+    border: 1px solid #2f3a56 !important;
+  }
 
-# ---------- COLUMN SELECTION ----------
-st.subheader("Select Columns")
-col1, col2 = st.columns(2)
-with col1:
-    company_col = st.selectbox("Company column", options=list(df.columns))
-with col2:
-    domain_col = st.selectbox("Domain column (can be domain or email)", options=list(df.columns))
+  /* Dropdown option items */
+  li[role="option"], div[role="option"] {
+    background-color: #1a2235 !important;
+    color: #e9eef7 !important;
+  }
 
-run = st.button("🚀 Run Check")
+  /* Hover effect for dropdown items */
+  li[role="option"]:hover, div[role="option"]:hover {
+    background-color: #314d8b !important;
+    color: white !important;
+  }
 
-# ---------- PROCESS ----------
-if run:
-    out = df.copy()
-    statuses, scores, reasons = [], [], []
+  /* Selected/focused item */
+  div[aria-selected="true"], li[aria-selected="true"] {
+    background-color: #2a3b5f !important;
+    color: white !important;
+  }
 
-    for i in range(len(out)):
-        comp = out.at[i, company_col]
-        dom = out.at[i, domain_col]
-        status, score, reason = compare_company_domain(comp, dom)
-        statuses.append(status)
-        scores.append(score)
-        reasons.append(reason)
+  /* File uploader box */
+  section[data-testid="stFileUploader"] {
+    background-color: #1a2235;
+    padding: 15px;
+    border-radius: 10px;
+    border: 1px dashed #3b4a6b;
+  }
 
-    out["Domain_Check_Status"] = statuses
-    out["Domain_Check_Score"] = scores
-    out["Domain_Check_Reason"] = reasons
+  /* Buttons */
+  button[kind="primary"], div[data-testid="stButton"] > button {
+    background: linear-gradient(90deg, #3557ff, #2cc9ff) !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+    padding: 0.6em 1.2em !important;
+  }
 
-    st.success("✅ Matching complete! Preview below.")
-    styled = out.style.apply(
-        lambda s: [
-            "background-color:#163d2a" if (c and "likely" in str(c).lower() and "not" not in str(c).lower())
-            else ("background-color:#44212a" if ("not" in str(c).lower()) else ("background-color:#403514" if ("unsure" in str(c).lower()) else ""))
-            for c in s
-        ],
-        subset=["Domain_Check_Status"],
-    )
+  /* Dataframe text */
+  .stDataFrame, .stDataFrame div {
+    color: #d9e2f2 !important;
+  }
 
-    st.dataframe(styled, use_container_width=True, height=420)
+  /* Table scroll area */
+  div[data-testid="stHorizontalBlock"] {
+    overflow-x: auto !important;
+  }
+</style>
+""", unsafe_allow_html=True)
 
-    # ---------- DOWNLOAD ----------
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-        out.to_excel(writer, index=False, sheet_name="Results")
-    st.download_button(
-        "⬇️ Download results (Excel)",
-        data=buffer.getvalue(),
-        file_name="company_domain_check.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+# ---------------- HEADER ----------------
+st.markdown("## 🔍 Company ↔ Domain Matching (Standalone)")
+st.write("Upload a dataset, select your company and domain columns, and automatically classify the relationship between them.")
 
-    st.caption(
-        "Legend: "
-        "<span class='good'>Likely Match</span> · "
-        "<span class='maybe'>Unsure – Please Check</span> · "
-        "<span class='bad'>Likely NOT Match</span>",
-        unsafe_allow_html=True,
-    )
+# ---------------- FILE UPLOAD ----------------
+uploaded_file = st.file_uploader("Upload a CSV or Excel file", type=["csv", "xlsx"])
+
+if uploaded_file:
+    try:
+        if uploaded_file.name.endswith(".csv"):
+            df = pd.read_csv(uploaded_file)
+        else:
+            df = pd.read_excel(uploaded_file)
+    except Exception as e:
+        st.error(f"❌ Error loading file: {e}")
+        st.stop()
+
+    st.write(f"✅ Loaded file: **{uploaded_file.name}** ({df.shape[0]} rows, {df.shape[1]} columns)")
+
+    # ---------------- COLUMN SELECTION ----------------
+    st.subheader("Select Columns")
+    col1, col2 = st.columns(2)
+    with col1:
+        company_col = st.selectbox("Company column", options=df.columns)
+    with col2:
+        domain_col = st.selectbox("Domain column (can be domain or email)", options=df.columns)
+
+    # ---------------- RUN CHECK ----------------
+    if st.button("🚀 Run Check"):
+        def domain_check_reason(company, domain):
+            if pd.isna(company) or pd.isna(domain) or not str(domain).strip():
+                return "missing input"
+
+            company = str(company).lower().strip()
+            domain = str(domain).lower().strip()
+
+            # Extract domain part if it's an email
+            if "@" in domain:
+                domain = domain.split("@")[-1]
+
+            # Rule 1: direct containment
+            if company in domain or domain in company:
+                return "direct containment"
+
+            # Rule 2: fuzzy match
+            ratio = fuzz.partial_ratio(company, domain)
+            if ratio >= 80:
+                return f"strong fuzzy ({ratio}%)"
+            elif ratio >= 60:
+                return f"weak fuzzy ({ratio}%)"
+
+            # Rule 3: token containment
+            company_tokens = set(company.replace(",", "").split())
+            domain_tokens = set(domain.replace(".", "").split())
+            if any(t in domain_tokens for t in company_tokens):
+                return "token containment"
+
+            return "no match"
+
+        df["Domain_Check_Reason"] = df.apply(
+            lambda x: domain_check_reason(x[company_col], x[domain_col]), axis=1
+        )
+
+        st.success("✅ Domain matching complete!")
+        st.dataframe(df[["Domain_Check_Reason", company_col, domain_col]].head(50))
+
+        # ---------------- DOWNLOAD RESULTS ----------------
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="⬇️ Download Results as CSV",
+            data=csv,
+            file_name="domain_check_results.csv",
+            mime="text/csv",
+        )
+else:
+    st.info("⬆️ Upload a CSV or Excel file to begin.")
